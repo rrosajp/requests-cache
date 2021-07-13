@@ -400,7 +400,7 @@ python-versions = ">=2.6, !=3.0.*, !=3.1.*, !=3.2.*"
 
 [[package]]
 name = "m2r2"
-version = "0.2.7"
+version = "0.3.0"
 description = "Markdown and reStructuredText in a single file."
 category = "main"
 optional = true
@@ -1077,7 +1077,7 @@ redis = ["redis"]
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.6"
-content-hash = "1570eaa1b8c4092fb0db3c33e3e1200fcd41eda3e9a18ff8420c14fc9db29723"
+content-hash = "4f4a27e3345dc295ea2c6e5a627de26bd3a9e67b37138be743a6c650f2096f19"
 
 [metadata.files]
 alabaster = [
@@ -1277,8 +1277,8 @@ jmespath = [
     {file = "jmespath-0.10.0.tar.gz", hash = "sha256:b85d0567b8666149a93172712e68920734333c0ce7e89b78b3e987f71e5ed4f9"},
 ]
 m2r2 = [
-    {file = "m2r2-0.2.7-py3-none-any.whl", hash = "sha256:a1b87b00f4d5163a3616253fca4c045f8351818cd803ba2e24af8897442a0eae"},
-    {file = "m2r2-0.2.7.tar.gz", hash = "sha256:fbf72ade9f648d41658f97c5267687431612451f36b65761a138fbc276294df5"},
+    {file = "m2r2-0.3.0-py3-none-any.whl", hash = "sha256:f7ace700bb4a7f8b710a57da84ff6b96a5a9629c8cef442c2e85500bc21cbf16"},
+    {file = "m2r2-0.3.0.tar.gz", hash = "sha256:3cac62204ed10119cdc98311cc7fb9f95f6adf07bfb39b1d725f25d56b310ccb"},
 ]
 mando = [
     {file = "mando-0.6.4-py2.py3-none-any.whl", hash = "sha256:4ce09faec7e5192ffc3c57830e26acba0fd6cd11e1ee81af0d4df0657463bd1c"},
