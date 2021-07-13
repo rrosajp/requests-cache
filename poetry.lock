@@ -765,7 +765,7 @@ test = ["fixtures", "mock", "purl", "pytest", "sphinx", "testrepository (>=0.0.1
 
 [[package]]
 name = "rich"
-version = "10.3.0"
+version = "10.6.0"
 description = "Render rich text, tables, progress bars, syntax highlighting, markdown and more to the terminal"
 category = "dev"
 optional = false
@@ -1591,8 +1591,8 @@ requests-mock = [
     {file = "requests_mock-1.9.3-py2.py3-none-any.whl", hash = "sha256:0a2d38a117c08bb78939ec163522976ad59a6b7fdd82b709e23bb98004a44970"},
 ]
 rich = [
-    {file = "rich-10.3.0-py3-none-any.whl", hash = "sha256:b3b5e6c47bf6ea7a2479f5d9245d5ed32f542931912e14203292dfaa0c6c1437"},
-    {file = "rich-10.3.0.tar.gz", hash = "sha256:a83bff83309687e1859c75b499879738b135d700738dd2721c22965497af05bd"},
+    {file = "rich-10.6.0-py3-none-any.whl", hash = "sha256:d3f72827cd5df13b2ef7f1a97f81ec65548d4fdeb92cef653234f227580bbb2a"},
+    {file = "rich-10.6.0.tar.gz", hash = "sha256:128261b3e2419a4ef9c97066ccc2abbfb49fa7c5e89c3fe4056d00aa5e9c1e65"},
 ]
 s3transfer = [
     {file = "s3transfer-0.4.2-py2.py3-none-any.whl", hash = "sha256:9b3752887a2880690ce628bc263d6d13a3864083aeacff4890c1c9839a5eb0bc"},
