@@ -58,23 +58,23 @@ jobs:
       - name: Install dependencies
         if: steps.cache.outputs.cache-hit != 'true'
         run: poetry install -v -E all
-      - name: Workaround for issue with poetry package extras (python 3.10 only)
-        if: ${{ startsWith(matrix.python-version, '3.10') }}
-        run: |
-          source $VENV
-          pip install -U cattrs
       - name: Install latest available requests + urllib3 (scheduled tests only)
         if: ${{ github.event.schedule }}
         run: |
           poetry add requests@latest
           poetry add urllib3@latest
+      - name: Workaround for issue with poetry package extras (python 3.10 only)
+        if: ${{ startsWith(matrix.python-version, '3.10') }}
+        run: |
+          source $VENV
+          pip install -U cattrs
 
       # Run tests with coverage report
       - name: Run tests
         run: |
           source $VENV
-          pytest -x tests/unit --numprocesses=auto ${{ env.COVERAGE_ARGS }}
-          pytest -x tests/integration --cov-append ${{ env.COVERAGE_ARGS }}
+          pytest -rs -x tests/unit --numprocesses=auto ${{ env.COVERAGE_ARGS }}
+          pytest -rs -x tests/integration --cov-append ${{ env.COVERAGE_ARGS }}
 
       # Latest python version: send coverage report to coveralls
       - name: Run coveralls
@@ -117,5 +117,6 @@ jobs:
           black --check --diff .
           isort --check --diff .
           flake8 .
+          mypy requests_cache
       - name: Run cyclomatic complexity check
         run: poetry run radon cc ${{ env.COMPLEXITY_ARGS }} requests_cache

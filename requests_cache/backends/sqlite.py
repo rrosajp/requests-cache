@@ -6,7 +6,7 @@ from os import makedirs
 from os.path import abspath, basename, dirname, expanduser, isabs, join
 from pathlib import Path
 from tempfile import gettempdir
-from typing import Iterable, List, Tuple, Type, Union
+from typing import Collection, Iterable, Iterator, List, Tuple, Type, Union
 
 from . import BaseCache, BaseStorage, get_valid_kwargs
 
@@ -71,7 +71,6 @@ class DbDict(BaseStorage):
     def __init__(
         self, db_path, table_name='http_cache', fast_save=False, use_temp: bool = False, **kwargs
     ):
-        kwargs.setdefault('suppress_warnings', True)
         super().__init__(**kwargs)
         self.connection_kwargs = get_valid_kwargs(sqlite_template, kwargs)
         self.db_path = _get_db_path(db_path, use_temp)
@@ -88,7 +87,7 @@ class DbDict(BaseStorage):
         connection.execute(f'CREATE TABLE IF NOT EXISTS {self.table_name} (key PRIMARY KEY, value)')
 
     @contextmanager
-    def connection(self, commit=False) -> sqlite3.Connection:
+    def connection(self, commit=False) -> Iterator[sqlite3.Connection]:
         """Get a thread-local database connection"""
         if not hasattr(self._local_context, 'con'):
             logger.debug(f'Opening connection to {self.db_path}:{self.table_name}')
@@ -184,7 +183,7 @@ class DbPickleDict(DbDict):
 
     def __setitem__(self, key, value):
         serialized_value = self.serializer.dumps(value)
-        if self.serializer.is_binary:
+        if isinstance(serialized_value, bytes):
             serialized_value = sqlite3.Binary(serialized_value)
         super().__setitem__(key, serialized_value)
 
@@ -192,7 +191,7 @@ class DbPickleDict(DbDict):
         return self.serializer.loads(super().__getitem__(key))
 
 
-def _format_sequence(values: Iterable) -> Tuple[str, List]:
+def _format_sequence(values: Collection) -> Tuple[str, List]:
     """Get SQL parameter marks for a sequence-based query, and ensure value is a sequence"""
     if not isinstance(values, Iterable):
         values = [values]

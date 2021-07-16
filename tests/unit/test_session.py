@@ -1,8 +1,8 @@
 """CachedSession + BaseCache tests that use mocked responses only"""
 # TODO: This could be split up into some smaller test modules
 import json
-import pickle
 import pytest
+import sys
 import time
 from collections import UserDict, defaultdict
 from datetime import datetime, timedelta
@@ -11,6 +11,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 import requests
+from itsdangerous import Signer
 from itsdangerous.exc import BadSignature
 from requests.structures import CaseInsensitiveDict
 
@@ -22,9 +23,10 @@ from requests_cache.backends import (
     DbPickleDict,
     get_placeholder_class,
 )
+from requests_cache.backends.base import DESERIALIZE_ERRORS
 from requests_cache.cache_keys import url_to_key
 from requests_cache.models import CachedResponse
-from requests_cache.serializers import PickleSerializer, SafePickleSerializer
+from requests_cache.serializers import pickle_serializer
 from tests.conftest import (
     MOCKED_URL,
     MOCKED_URL_404,
@@ -33,6 +35,8 @@ from tests.conftest import (
     MOCKED_URL_REDIRECT,
     MOCKED_URL_REDIRECT_TARGET,
 )
+
+YESTERDAY = datetime.utcnow() - timedelta(days=1)
 
 
 def test_init_unregistered_backend():
@@ -137,7 +141,7 @@ def test_repr(mock_session):
     mock_session.cache.redirects['key_2'] = 'value'
 
     assert mock_session.cache.name in repr(mock_session) and '10.5' in repr(mock_session)
-    assert 'redirects: 2' in str(mock_session.cache) and 'responses: 1' in str(mock_session.cache)
+    assert '2 redirects' in str(mock_session.cache) and '1 responses' in str(mock_session.cache)
 
 
 def test_urls(mock_session):
@@ -176,14 +180,40 @@ def test_values(mock_session):
     assert all([isinstance(response, CachedResponse) for response in responses])
 
 
-def test_values__with_invalid_response(mock_session):
+@pytest.mark.parametrize('check_expiry, expected_count', [(True, 1), (False, 2)])
+def test_values__with_invalid_responses(check_expiry, expected_count, mock_session):
+    """values() should always exclude invalid responses, and optionally exclude expired responses"""
     responses = [mock_session.get(url) for url in [MOCKED_URL, MOCKED_URL_JSON, MOCKED_URL_HTTPS]]
-    responses[2] = AttributeError
+    responses[1] = AttributeError
+    responses[2] = CachedResponse(expires=YESTERDAY, url='test')
+
     with patch.object(DbPickleDict, '__getitem__', side_effect=responses):
-        assert len(list(mock_session.cache.values())) == 2
+        values = mock_session.cache.values(check_expiry=check_expiry)
+        assert len(list(values)) == expected_count
 
     # The invalid response should be skipped, but remain in the cache for now
     assert len(mock_session.cache.responses.keys()) == 3
+
+
+class TimeBomb:
+    """Class that will raise an error when unpickled"""
+
+    def __init__(self):
+        self.foo = 'bar'
+
+    def __setstate__(self, value):
+        raise ValueError('Invalid response!')
+
+
+@pytest.mark.parametrize('check_expiry, expected_count', [(True, 2), (False, 3)])
+def test_response_count(check_expiry, expected_count, mock_session):
+    """response_count() should always exclude invalid responses, and optionally exclude expired responses"""
+    mock_session.get(MOCKED_URL)
+    mock_session.get(MOCKED_URL_JSON)
+
+    mock_session.cache.responses['expired_response'] = CachedResponse(expires=YESTERDAY)
+    mock_session.cache.responses['invalid_response'] = TimeBomb()
+    assert mock_session.cache.response_count(check_expiry=check_expiry) == expected_count
 
 
 def test_filter_fn(mock_session):
@@ -353,10 +383,7 @@ def test_include_get_headers_normalize(mock_session):
     assert mock_session.get(MOCKED_URL, headers=reversed_headers).from_cache is True
 
 
-@pytest.mark.parametrize(
-    'exception_cls',
-    [AttributeError, KeyError, TypeError, ValueError, pickle.PickleError],
-)
+@pytest.mark.parametrize('exception_cls', DESERIALIZE_ERRORS)
 def test_cache_error(exception_cls, mock_session):
     """If there is an error while fetching a cached response, a new one should be fetched"""
     mock_session.get(MOCKED_URL)
@@ -567,14 +594,16 @@ def test_unpickle_errors(mock_session):
     assert resp.json()['message'] == 'mock json response'
 
 
+# TODO: This usage is deprecated. Keep this test for backwards-compatibility until removed in a future release.
+@pytest.mark.skipif(sys.version_info < (3, 7), reason='Requires python 3.7+')
 def test_cache_signing(tempfile_path):
     session = CachedSession(tempfile_path)
-    assert isinstance(session.cache.responses.serializer, PickleSerializer)
+    assert session.cache.responses.serializer == pickle_serializer
 
     # With a secret key, itsdangerous should be used
     secret_key = str(uuid4())
     session = CachedSession(tempfile_path, secret_key=secret_key)
-    assert isinstance(session.cache.responses.serializer, SafePickleSerializer)
+    assert isinstance(session.cache.responses.serializer.steps[-1].obj, Signer)
 
     # Simple serialize/deserialize round trip
     response = CachedResponse()

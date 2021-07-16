@@ -1,47 +1,62 @@
 # flake8: noqa: F401
-from logging import getLogger
-from typing import Type, Union
+import pickle
+from warnings import warn
 
 from .. import get_placeholder_class
-from .base import BaseSerializer
-from .pickle_serializer import PickleSerializer, SafePickleSerializer
+from .pipeline import SerializerPipeline, Stage
 
-SerializerSpecifier = Union[str, BaseSerializer, Type[BaseSerializer]]
-logger = getLogger(__name__)
+__all__ = [
+    'SERIALIZERS',
+    'CattrStage',
+    'SerializerPipeline',
+    'Stage',
+    'bson_serializer',
+    'json_serializer',
+    'pickle_serializer',
+    'safe_pickle_serializer',
+    'yaml_serializer',
+    'init_serializer',
+]
 
+# If cattrs isn't installed, use plain pickle for pickle_serializer, and placeholders for the rest.
+# Additional checks for format-specific optional libraries are handled in the preconf module.
 try:
-    from .bson_serializer import BSONSerializer
+    from .cattrs import CattrStage
+    from .preconf import (
+        bson_serializer,
+        json_serializer,
+        pickle_serializer,
+        safe_pickle_serializer,
+        yaml_serializer,
+    )
 except ImportError as e:
-    BSONSerializer = get_placeholder_class(e)  # type: ignore
-try:
-    from .json_serializer import JSONSerializer
-except ImportError as e:
-    JSONSerializer = get_placeholder_class(e)  # type: ignore
+    CattrStage = get_placeholder_class(e)  # type: ignore
+    bson_serializer = get_placeholder_class(e)
+    json_serializer = get_placeholder_class(e)
+    pickle_serializer = pickle  # type: ignore
+    safe_pickle_serializer = get_placeholder_class(e)
+    yaml_serializer = get_placeholder_class(e)
 
 
-SERIALIZER_CLASSES = {
-    'bson': BSONSerializer,
-    'json': JSONSerializer,
-    'pickle': PickleSerializer,
-    'safe_pickle': SafePickleSerializer,
+SERIALIZERS = {
+    'bson': bson_serializer,
+    'json': json_serializer,
+    'pickle': pickle_serializer,
+    'yaml': yaml_serializer,
 }
 
 
-def init_serializer(serializer: SerializerSpecifier = None, *args, **kwargs) -> BaseSerializer:
+def init_serializer(serializer=None, **kwargs):
     """Initialize a serializer from a name, class, or instance"""
-    logger.debug(f'Initializing serializer: {serializer}')
-
-    # Determine serializer class
-    if isinstance(serializer, BaseSerializer):
-        return serializer
-    elif isinstance(serializer, type):
-        return serializer(*args, **kwargs)
-    # If no serializer is specified and a secret key is available, use itsdangerous; otherwise pickle
-    elif not serializer:
-        serializer = 'safe_pickle' if kwargs.get('secret_key') else 'pickle'
-
-    serializer = str(serializer).lower()
-    if serializer not in SERIALIZER_CLASSES:
-        raise ValueError(f'Invalid serializer: {serializer}. Choose from: {SERIALIZER_CLASSES.keys()}')
-
-    return SERIALIZER_CLASSES[serializer](*args, **kwargs)
+    serializer = serializer or 'pickle'
+    # Backwards=compatibility with 0.6; will be removed in 0.8
+    if serializer == 'safe_pickle' or (serializer == 'pickle' and 'secret_key' in kwargs):
+        serializer = safe_pickle_serializer(**kwargs)
+        msg = (
+            'Please initialize with safe_pickle_serializer(secret_key) instead. '
+            'This usage is deprecated and will be removed in a future version.'
+        )
+        warn(DeprecationWarning(msg))
+    elif isinstance(serializer, str):
+        serializer = SERIALIZERS[serializer]
+    return serializer

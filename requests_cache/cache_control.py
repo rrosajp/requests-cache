@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from fnmatch import fnmatch
 from logging import getLogger
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
 from requests import PreparedRequest, Response
 
@@ -50,12 +50,13 @@ class CacheActions:
     ):
         """Initialize from request info and cache settings"""
         self.key = key
+        self.cache_control = cache_control
         if cache_control and has_cache_headers(request.headers):
             self._init_from_headers(request.headers)
         else:
             self._init_from_settings(url=request.url, **kwargs)
 
-    def _init_from_headers(self, headers: Dict):
+    def _init_from_headers(self, headers: Mapping):
         """Initialize from request headers"""
         directives = get_cache_directives(headers)
         do_not_cache = directives.get('max-age') == DO_NOT_CACHE
@@ -91,10 +92,18 @@ class CacheActions:
 
     def update_from_response(self, response: Response):
         """Update expiration + actions based on response headers, if not previously set by request"""
+        if not self.cache_control:
+            return
         directives = get_cache_directives(response.headers)
         do_not_cache = directives.get('max-age') == DO_NOT_CACHE
         self.expire_after = coalesce(self.expires, directives.get('max-age'), directives.get('expires'))
         self.skip_write = self.skip_write or do_not_cache or 'no-store' in directives
+
+    def __str__(self):
+        return (
+            f'Expire after: {self.expire_after} | Skip read: {self.skip_read} | '
+            f'Skip write: {self.skip_write}'
+        )
 
 
 def coalesce(*values: Any, default=None) -> Any:
@@ -122,7 +131,7 @@ def get_expiration_datetime(expire_after: ExpirationTime) -> Optional[datetime]:
     return datetime.utcnow() + expire_after
 
 
-def get_cache_directives(headers: Dict) -> Dict:
+def get_cache_directives(headers: Mapping) -> Dict:
     """Get all Cache-Control directives, and handle multiple headers and comma-separated lists"""
     if not headers:
         return {}
@@ -135,8 +144,13 @@ def get_cache_directives(headers: Dict) -> Dict:
     return kv_directives
 
 
-def get_url_expiration(url: str, urls_expire_after: ExpirationPatterns = None) -> ExpirationTime:
+def get_url_expiration(
+    url: Optional[str], urls_expire_after: ExpirationPatterns = None
+) -> ExpirationTime:
     """Check for a matching per-URL expiration, if any"""
+    if not url:
+        return None
+
     for pattern, expire_after in (urls_expire_after or {}).items():
         if url_match(url, pattern):
             logger.debug(f'URL {url} matched pattern "{pattern}": {expire_after}')
@@ -144,7 +158,7 @@ def get_url_expiration(url: str, urls_expire_after: ExpirationPatterns = None) -
     return None
 
 
-def has_cache_headers(headers: Dict) -> bool:
+def has_cache_headers(headers: Mapping) -> bool:
     """Determine if headers contain cache directives **that we currently support**"""
     has_cache_control = any([d in headers.get('Cache-Control', '') for d in CACHE_DIRECTIVES])
     return has_cache_control or bool(headers.get('Expires'))

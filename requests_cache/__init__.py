@@ -1,9 +1,11 @@
 # flake8: noqa: E402,F401
 from logging import getLogger
 
-__version__ = '0.7.0'
-
 logger = getLogger(__name__)
+
+# Version is defined in pyproject.toml.
+# It's copied here to make it easier for client code to check the installed version.
+__version__ = '0.7.2'
 
 
 def get_placeholder_class(original_exception: Exception = None):
@@ -12,10 +14,15 @@ def get_placeholder_class(original_exception: Exception = None):
     """
 
     class Placeholder:
-        def __init__(*args, **kwargs):
-            msg = 'Dependencies are not installed for this feature'
-            logger.error(msg)
-            raise original_exception or ImportError(msg)
+        msg = 'Dependencies are not installed for this feature'
+
+        def __init__(self, *args, **kwargs):
+            logger.error(self.msg)
+            raise original_exception or ImportError(self.msg)
+
+        def __getattr__(self, *args, **kwargs):
+            logger.error(self.msg)
+            raise original_exception or ImportError(self.msg)
 
     return Placeholder
 

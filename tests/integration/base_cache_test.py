@@ -9,11 +9,11 @@ from typing import Dict, Type
 from urllib.parse import parse_qs, urlparse
 
 import requests
+from requests.models import PreparedRequest
 
 from requests_cache import ALL_METHODS, CachedResponse, CachedSession
 from requests_cache.backends.base import BaseCache
-from requests_cache.serializers import SERIALIZER_CLASSES
-from requests_cache.serializers.base import BaseSerializer
+from requests_cache.serializers import SERIALIZERS, SerializerPipeline, safe_pickle_serializer
 from tests.conftest import (
     CACHE_NAME,
     HTTPBIN_FORMATS,
@@ -27,7 +27,13 @@ from tests.conftest import (
 )
 
 REQUESTS_VERSION = tuple([int(v) for v in requests.__version__.split('.')])
-SERIALIZERS = [k for k, v in SERIALIZER_CLASSES.items() if issubclass(v, BaseSerializer)]
+
+# Handle optional dependencies if they're not installed; if so, skips will be shown in pytest output
+TEST_SERIALIZERS = SERIALIZERS.copy()
+try:
+    TEST_SERIALIZERS['safe_pickle'] = safe_pickle_serializer(secret_key='hunter2')
+except ImportError:
+    TEST_SERIALIZERS['safe_pickle'] = 'safe_pickle_placeholder'
 
 
 class BaseCacheTest:
@@ -37,9 +43,7 @@ class BaseCacheTest:
     init_kwargs: Dict = {}
 
     def init_session(self, clear=True, **kwargs) -> CachedSession:
-        kwargs.update(
-            {'allowable_methods': ALL_METHODS, 'suppress_warnings': True, 'secret_key': 'hunter2'}
-        )
+        kwargs.setdefault('allowable_methods', ALL_METHODS)
         kwargs.setdefault('serializer', 'pickle')
         backend = self.backend_class(CACHE_NAME, **self.init_kwargs, **kwargs)
         if clear:
@@ -48,23 +52,29 @@ class BaseCacheTest:
 
         return CachedSession(backend=backend, **self.init_kwargs, **kwargs)
 
-    @pytest.mark.parametrize('serializer', SERIALIZERS)
+    @pytest.mark.parametrize('serializer', TEST_SERIALIZERS.values())
     @pytest.mark.parametrize('method', HTTPBIN_METHODS)
     @pytest.mark.parametrize('field', ['params', 'data', 'json'])
     def test_all_methods(self, field, method, serializer):
         """Test all relevant combinations of methods X data fields X serializers.
         Requests with different request params, data, or json should be cached under different keys.
         """
+        if not isinstance(serializer, SerializerPipeline):
+            pytest.skip(f'Dependencies not installed for {serializer}')
+
         url = httpbin(method.lower())
         session = self.init_session(serializer=serializer)
         for params in [{'param_1': 1}, {'param_1': 2}, {'param_2': 2}]:
             assert session.request(method, url, **{field: params}).from_cache is False
             assert session.request(method, url, **{field: params}).from_cache is True
 
-    @pytest.mark.parametrize('serializer', SERIALIZERS)
+    @pytest.mark.parametrize('serializer', TEST_SERIALIZERS.values())
     @pytest.mark.parametrize('response_format', HTTPBIN_FORMATS)
     def test_all_response_formats(self, response_format, serializer):
         """Test that all relevant combinations of response formats X serializers are cached correctly"""
+        if not isinstance(serializer, SerializerPipeline):
+            pytest.skip(f'Dependencies not installed for {serializer}')
+
         session = self.init_session(serializer=serializer)
         # Temporary workaround for this issue: https://github.com/kevin1024/pytest-httpbin/issues/60
         if response_format == 'json' and USE_PYTEST_HTTPBIN:
@@ -78,14 +88,28 @@ class BaseCacheTest:
 
     @pytest.mark.parametrize('n_redirects', range(1, 5))
     @pytest.mark.parametrize('endpoint', ['redirect', 'absolute-redirect', 'relative-redirect'])
-    def test_redirects(self, endpoint, n_redirects):
-        """Test all types of redirect endpoints with different numbers of consecutive redirects"""
+    def test_redirect_history(self, endpoint, n_redirects):
+        """Test redirect caching (in separate `redirects` cache) with all types of redirect endpoints,
+        using different numbers of consecutive redirects
+        """
         session = self.init_session()
         session.get(httpbin(f'{endpoint}/{n_redirects}'))
         r2 = session.get(httpbin('get'))
 
         assert r2.from_cache is True
         assert len(session.cache.redirects) == n_redirects
+
+    @pytest.mark.parametrize('endpoint', ['redirect', 'absolute-redirect', 'relative-redirect'])
+    def test_redirect_responses(self, endpoint):
+        """Test redirect caching (in main `responses` cache) with all types of redirect endpoints"""
+        session = self.init_session(allowable_codes=(200, 302))
+        r1 = session.head(httpbin(f'{endpoint}/2'))
+        r2 = session.head(httpbin(f'{endpoint}/2'))
+
+        assert r2.from_cache is True
+        assert len(session.cache.redirects) == 0
+        assert isinstance(r1.next, PreparedRequest) and r1.next.url.endswith('redirect/1')
+        assert isinstance(r2.next, PreparedRequest) and r2.next.url.endswith('redirect/1')
 
     def test_cookies(self):
         session = self.init_session()
@@ -105,19 +129,23 @@ class BaseCacheTest:
             assert response_3 == get_json(httpbin('cookies'))
 
     @pytest.mark.parametrize(
-        'request_headers, expected_expiration',
+        'cache_control, request_headers, expected_expiration',
         [
-            ({}, 60),
-            ({'Cache-Control': 'max-age=360'}, 360),
-            ({'Cache-Control': 'no-store'}, None),
-            ({'Expires': HTTPDATE_STR, 'Cache-Control': 'max-age=360'}, 360),
+            (True, {}, 60),
+            (True, {'Cache-Control': 'max-age=360'}, 360),
+            (True, {'Cache-Control': 'no-store'}, None),
+            (True, {'Expires': HTTPDATE_STR, 'Cache-Control': 'max-age=360'}, 360),
+            (False, {}, None),
+            (False, {'Cache-Control': 'max-age=360'}, None),
+            (False, {'Expires': HTTPDATE_STR, 'Cache-Control': 'max-age=360'}, None),
         ],
     )
-    def test_cache_control_expiration(self, request_headers, expected_expiration):
+    def test_cache_control_expiration(self, cache_control, request_headers, expected_expiration):
         """Test cache headers for both requests and responses. The `/cache/{seconds}` endpoint returns
         Cache-Control headers, which should be used unless request headers are sent.
+        No headers should be used if `cache_control=False`.
         """
-        session = self.init_session(cache_control=True)
+        session = self.init_session(cache_control=cache_control)
         now = datetime.utcnow()
         session.get(httpbin('cache/60'), headers=request_headers)
         response = session.get(httpbin('cache/60'), headers=request_headers)
@@ -199,16 +227,12 @@ class BaseCacheTest:
     @pytest.mark.parametrize('method', HTTPBIN_METHODS)
     def test_filter_request_headers(self, method):
         url = httpbin(method.lower())
-        session = self.init_session(
-            ignored_parameters=[
-                'Authorization',
-            ]
-        )
+        session = self.init_session(ignored_parameters=['Authorization'])
         response = session.request(method, url, headers={"Authorization": "<Secret Key>"})
         assert response.from_cache is False
         response = session.request(method, url, headers={"Authorization": "<Secret Key>"})
         assert response.from_cache is True
-        assert response.request.headers['Authorization'] is None
+        assert response.request.headers.get('Authorization') is None
 
     @pytest.mark.parametrize('method', HTTPBIN_METHODS)
     def test_filter_request_query_parameters(self, method):

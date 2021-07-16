@@ -1,21 +1,19 @@
 import pickle
 import warnings
 from abc import ABC
+from collections import UserDict
 from collections.abc import MutableMapping
 from datetime import datetime
-from logging import DEBUG, WARNING, getLogger
+from logging import getLogger
 from typing import Iterable, Iterator, Tuple, Union
-
-import requests
-from requests.models import PreparedRequest
 
 from ..cache_control import ExpirationTime
 from ..cache_keys import create_key, remove_ignored_params, url_to_key
-from ..models.response import AnyResponse, CachedResponse
+from ..models import AnyRequest, AnyResponse, CachedResponse
 from ..serializers import init_serializer
 
 # Specific exceptions that may be raised during deserialization
-DESERIALIZE_ERRORS = (AttributeError, TypeError, ValueError, pickle.PickleError)
+DESERIALIZE_ERRORS = (AttributeError, ImportError, TypeError, ValueError, pickle.PickleError)
 
 ResponseOrKey = Union[CachedResponse, str]
 logger = getLogger(__name__)
@@ -34,9 +32,9 @@ class BaseCache:
         ignored_parameters: Iterable[str] = None,
         **kwargs,
     ):
-        self.name = None
-        self.redirects = {}
-        self.responses = {}
+        self.name: str = ''
+        self.redirects: BaseStorage = DictStorage()
+        self.responses: BaseStorage = DictStorage()
         self.include_get_headers = include_get_headers
         self.ignored_parameters = ignored_parameters
 
@@ -60,7 +58,7 @@ class BaseCache:
         cached_response.request = remove_ignored_params(cached_response.request, self.ignored_parameters)
         self.responses[key] = cached_response
 
-    def save_redirect(self, request: PreparedRequest, response_key: str):
+    def save_redirect(self, request: AnyRequest, response_key: str):
         """
         Map a redirect request to a response. This makes it possible to associate many keys with a
         single response.
@@ -115,7 +113,7 @@ class BaseCache:
         self.responses.bulk_delete(keys)
         # Remove any redirects that no longer point to an existing response
         invalid_redirects = [k for k, v in self.redirects.items() if v not in self.responses]
-        self.redirects.bulk_delete(set(keys + invalid_redirects))
+        self.redirects.bulk_delete(set(keys) | set(invalid_redirects))
 
     def clear(self):
         """Delete all items from the cache"""
@@ -136,7 +134,7 @@ class BaseCache:
         keys_to_update = {}
         keys_to_delete = []
 
-        for key, response in self._get_valid_responses(delete_invalid=True):
+        for key, response in self._get_valid_responses(delete=True):
             # If we're revalidating and it's not yet expired, update the cached item's expiration
             if expire_after is not None and not response.revalidate(expire_after):
                 keys_to_update[key] = response
@@ -156,9 +154,9 @@ class BaseCache:
         warnings.warn(DeprecationWarning(msg))
         self.remove_expired_responses(*args, **kwargs)
 
-    def create_key(self, request: requests.PreparedRequest, **kwargs) -> str:
+    def create_key(self, request: AnyRequest, **kwargs) -> str:
         """Create a normalized cache key from a request object"""
-        return create_key(request, self.ignored_parameters, self.include_get_headers, **kwargs)
+        return create_key(request, self.ignored_parameters, self.include_get_headers, **kwargs)  # type: ignore
 
     def has_key(self, key: str) -> bool:
         """Returns `True` if cache has `key`, `False` otherwise"""
@@ -168,35 +166,51 @@ class BaseCache:
         """Returns `True` if cache has `url`, `False` otherwise. Works only for GET request urls"""
         return self.has_key(url_to_key(url, self.ignored_parameters))  # noqa: W601
 
-    def keys(self) -> Iterator[str]:
-        """Get all cache keys for redirects and (valid) responses combined"""
+    def keys(self, check_expiry=False) -> Iterator[str]:
+        """Get all cache keys for redirects and valid responses combined"""
         yield from self.redirects.keys()
-        for key, _ in self._get_valid_responses():
+        for key, _ in self._get_valid_responses(check_expiry=check_expiry):
             yield key
 
-    def values(self) -> Iterator[CachedResponse]:
+    def values(self, check_expiry=False) -> Iterator[CachedResponse]:
         """Get all valid response objects from the cache"""
-        for _, response in self._get_valid_responses():
+        for _, response in self._get_valid_responses(check_expiry=check_expiry):
             yield response
 
-    def _get_valid_responses(self, delete_invalid=False) -> Iterator[Tuple[str, CachedResponse]]:
+    def response_count(self, check_expiry=False) -> int:
+        """Get the number of responses in the cache, excluding invalid (unusable) responses.
+        Can also optionally exclude expired responses.
+        """
+        return len(list(self.values(check_expiry=check_expiry)))
+
+    def _get_valid_responses(
+        self, check_expiry=False, delete=False
+    ) -> Iterator[Tuple[str, CachedResponse]]:
         """Get all responses from the cache, and skip (+ optionally delete) any invalid ones that
-        can't be deserialized"""
-        keys_to_delete = []
+        can't be deserialized. Can also optionally check response expiry and exclude expired responses.
+        """
+        invalid_keys = []
 
         for key in self.responses.keys():
             try:
-                yield key, self.responses[key]
+                response = self.responses[key]
+                if check_expiry and response.is_expired:
+                    invalid_keys.append(key)
+                else:
+                    yield key, response
             except DESERIALIZE_ERRORS:
-                keys_to_delete.append(key)
+                invalid_keys.append(key)
 
         # Delay deletion until the end, to improve responsiveness when used as a generator
-        if delete_invalid:
-            logger.debug(f'Deleting {len(keys_to_delete)} invalid responses')
-            self.bulk_delete(keys_to_delete)
+        if delete:
+            logger.debug(f'Deleting {len(invalid_keys)} invalid/expired responses')
+            self.bulk_delete(invalid_keys)
 
     def __str__(self):
-        return f'redirects: {len(self.redirects)}\nresponses: {len(self.responses)}'
+        """Show a count of total **rows** currently stored in the backend. For performance reasons,
+        this does not check for invalid or expired responses.
+        """
+        return f'Total rows: {len(self.responses)} responses, {len(self.redirects)} redirects'
 
     def __repr__(self):
         return f'<{self.__class__.__name__}(name={self.name})>'
@@ -208,24 +222,16 @@ class BaseStorage(MutableMapping, ABC):
     Args:
         secret_key: Optional secret key used to sign cache items for added security
         salt: Optional salt used to sign cache items
-        suppress_warnings: Don't show a warning when not using ``secret_key``
         serializer: Custom serializer that provides ``loads`` and ``dumps`` methods
     """
 
     def __init__(
         self,
-        secret_key: Union[Iterable, str, bytes] = None,
-        salt: Union[str, bytes] = None,
-        suppress_warnings: bool = False,
         serializer=None,
         **kwargs,
     ):
-        self.serializer = init_serializer(serializer, secret_key=secret_key, salt=salt)
+        self.serializer = init_serializer(serializer, **kwargs)
         logger.debug(f'Initializing {type(self).__name__} with serializer: {self.serializer}')
-
-        if not secret_key:
-            level = DEBUG if suppress_warnings else WARNING
-            logger.log(level, 'Using a secret key is recommended for this backend')
 
     def bulk_delete(self, keys: Iterable[str]):
         """Delete multiple keys from the cache. Does not raise errors for missing keys. This is a
@@ -240,3 +246,7 @@ class BaseStorage(MutableMapping, ABC):
 
     def __str__(self):
         return str(list(self.keys()))
+
+
+class DictStorage(UserDict, BaseStorage):
+    """A basic dict wrapper class for non-persistent storage"""
